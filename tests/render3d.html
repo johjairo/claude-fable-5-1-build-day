@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8" /><title>render3d smoke test</title></head>
+<body>
+<canvas id="gl" width="640" height="480"></canvas>
+<pre id="out">running</pre>
+<script type="module">
+  import { createGarmentRenderer } from '../src/render3d.js';
+  import { syntheticGarmentFrame, frameFromJoints } from '../src/torso.js';
+
+  const out = document.getElementById('out');
+  const log = (s) => { out.textContent += '\n' + s; };
+  try {
+    const gl = document.getElementById('gl');
+    const r = createGarmentRenderer(gl);
+    if (!r) throw new Error('no webgl');
+    r.resize(640, 480);
+
+    // Garment: solid red 200x240 canvas with a transparent hole.
+    const g = document.createElement('canvas');
+    g.width = 200; g.height = 240;
+    const gctx = g.getContext('2d');
+    gctx.fillStyle = 'red'; gctx.fillRect(0, 0, 200, 240);
+    gctx.clearRect(80, 0, 40, 40);
+    const garment = { drawable: g, frame: syntheticGarmentFrame(200, 240, 'top') };
+    r.setGarment('top', garment, 2);
+
+    // User frame: shoulders 300px apart centered, hips 350px below, with z tilt.
+    const user = frameFromJoints({
+      ls: { x: 470, y: 120, z: -60, visibility: 1 },
+      rs: { x: 170, y: 120, z: 60, visibility: 1 },
+      lh: { x: 440, y: 470, z: 0, visibility: 1 },
+      rh: { x: 200, y: 470, z: 0, visibility: 1 },
+    });
+    const params = { top: { width: 1, height: 1, offsetY: 0 } };
+    r.render(user, params, { top: true }, 1, 1);
+
+    // Read back: count opaque pixels and sample a shoulder-mid point (should be red).
+    const rd = document.createElement('canvas');
+    rd.width = 640; rd.height = 480;
+    const rctx = rd.getContext('2d');
+    rctx.drawImage(gl, 0, 0);
+    const data = rctx.getImageData(0, 0, 640, 480).data;
+    let opaque = 0;
+    for (let i = 3; i < data.length; i += 4) if (data[i] > 128) opaque++;
+    const px = (x, y) => { const i = (y * 640 + x) * 4; return [data[i], data[i + 1], data[i + 2], data[i + 3]]; };
+    const mid = px(320, 220);         // torso center → red
+    const corner = px(5, 5);           // outside → transparent
+    log(`opaque=${opaque}`);
+    log(`mid=${mid.join(',')}`);
+    log(`corner=${corner.join(',')}`);
+    const ok = opaque > 20000 && mid[0] > 200 && mid[1] < 60 && mid[3] > 200 && corner[3] === 0;
+    log(ok ? 'RESULT PASS' : 'RESULT FAIL');
+
+    // hidden when no frame
+    r.render(null, params, { top: true }, 1, 1);
+    rctx.clearRect(0, 0, 640, 480); rctx.drawImage(gl, 0, 0);
+    const d2 = rctx.getImageData(0, 0, 640, 480).data;
+    let op2 = 0; for (let i = 3; i < d2.length; i += 4) if (d2[i] > 0) op2++;
+    log(`hidden opaque=${op2} ${op2 === 0 ? 'PASS' : 'FAIL'}`);
+  } catch (e) {
+    log('ERROR ' + (e && e.message));
+    log('RESULT FAIL');
+  }
+  document.title = 'done';
+</script>
+</body>
+</html>

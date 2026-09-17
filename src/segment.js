@@ -3,12 +3,16 @@
  *
  * Uses a SegFormer model fine-tuned on clothing (ATR dataset) through
  * transformers.js. Given a photo of a person wearing an outfit, it returns one
- * transparent, cropped canvas per garment group (top / bottom / dress).
+ * transparent, cropped canvas per garment group (top / bottom / dress), each with
+ * the torso frame of the person in the photo so it can be re-fitted to the user.
  */
 import {
   pipeline,
   env,
 } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.1';
+import { unionMasks, keepMainComponents, erode, boundingBox } from './mask.js';
+import { frameFromJoints, translateFrame, syntheticGarmentFrame } from './torso.js';
+import { torsoJoints } from './pose.js';
 
 env.allowLocalModels = false;
 env.useBrowserCache = true;
@@ -60,10 +64,6 @@ export function loadSegmenter(onProgress) {
   return segmenterPromise;
 }
 
-export function isSegmenterReady() {
-  return segmenterPromise !== null;
-}
-
 function downscale(img) {
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
@@ -76,57 +76,8 @@ function downscale(img) {
   return canvas;
 }
 
-/** Nearest-neighbour resample of a single-channel mask. */
-function resampleMask(mask, width, height) {
-  if (mask.width === width && mask.height === height) return mask.data;
-  const out = new Uint8ClampedArray(width * height);
-  for (let y = 0; y < height; y++) {
-    const sy = Math.min(mask.height - 1, Math.floor((y * mask.height) / height));
-    for (let x = 0; x < width; x++) {
-      const sx = Math.min(mask.width - 1, Math.floor((x * mask.width) / width));
-      out[y * width + x] = mask.data[sy * mask.width + sx];
-    }
-  }
-  return out;
-}
-
-function unionMasks(parts, width, height) {
-  const union = new Uint8Array(width * height);
-  let area = 0;
-  for (const part of parts) {
-    const data = resampleMask(part.mask, width, height);
-    for (let i = 0; i < union.length; i++) {
-      if (data[i] > 127 && !union[i]) {
-        union[i] = 1;
-        area++;
-      }
-    }
-  }
-  return { union, area };
-}
-
-function boundingBox(union, width, height) {
-  let minX = width, minY = height, maxX = -1, maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const row = y * width;
-    for (let x = 0; x < width; x++) {
-      if (!union[row + x]) continue;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-  }
-  const pad = Math.round(Math.max(width, height) * PADDING_RATIO);
-  minX = Math.max(0, minX - pad);
-  minY = Math.max(0, minY - pad);
-  maxX = Math.min(width - 1, maxX + pad);
-  maxY = Math.min(height - 1, maxY + pad);
-  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
-}
-
 /** Builds a cropped, transparent canvas containing only the masked pixels. */
-function cutGarment(source, union, box) {
+function cutGarment(source, mask, box, feather) {
   const { x, y, w, h } = box;
 
   const maskCanvas = document.createElement('canvas');
@@ -136,7 +87,7 @@ function cutGarment(source, union, box) {
   const maskData = mctx.createImageData(w, h);
   for (let row = 0; row < h; row++) {
     for (let col = 0; col < w; col++) {
-      const on = union[(y + row) * source.width + (x + col)];
+      const on = mask[(y + row) * source.width + (x + col)];
       const o = (row * w + col) * 4;
       maskData.data[o] = 255;
       maskData.data[o + 1] = 255;
@@ -152,44 +103,80 @@ function cutGarment(source, union, box) {
   const ctx = out.getContext('2d');
   ctx.drawImage(source, x, y, w, h, 0, 0, w, h);
   ctx.globalCompositeOperation = 'destination-in';
-  ctx.filter = 'blur(1.2px)';
+  ctx.filter = `blur(${feather}px)`;
   ctx.drawImage(maskCanvas, 0, 0);
   ctx.filter = 'none';
   ctx.globalCompositeOperation = 'source-over';
   return out;
 }
 
+/** Runs pose on the photo and returns the torso frame in source pixels (or null). */
+function detectPhotoFrame(poseDetector, source) {
+  if (!poseDetector) return null;
+  try {
+    const lm = poseDetector.detect(source);
+    if (!lm) return null;
+    const { width, height } = source;
+    const px = (p) => ({ x: p.x * width, y: p.y * height, z: p.z * width, visibility: p.visibility });
+    const j = torsoJoints(lm);
+    return frameFromJoints({ ls: px(j.ls), rs: px(j.rs), lh: px(j.lh), rh: px(j.rh) });
+  } catch (err) {
+    console.warn('Pose on outfit photo failed', err);
+    return null;
+  }
+}
+
 /**
  * Segments an outfit photo into garments.
  *
  * @param {HTMLImageElement} img CORS-clean image.
- * @param {(evt: object) => void} [onProgress] transformers.js progress events.
- * @returns {Promise<Record<string, {canvas: HTMLCanvasElement, aspect: number, area: number, labels: string[]}>>}
- *   Keyed by garment type; only detected garments are present.
+ * @param {object} [opts]
+ * @param {(evt: object) => void} [opts.onProgress] transformers.js progress events.
+ * @param {{detect(source): Array|null}} [opts.poseDetector] image-mode pose detector for the photo.
+ * @returns {Promise<Record<string, {canvas, aspect, area, labels, frame, poseAligned}>>}
+ *   Keyed by garment type; only detected garments are present. `frame` is in crop pixels.
  */
-export async function extractGarments(img, onProgress) {
+export async function extractGarments(img, { onProgress, poseDetector } = {}) {
   const segmenter = await loadSegmenter(onProgress);
   const source = downscale(img);
   const { width, height } = source;
 
   // The pipeline accepts HTMLCanvasElement directly (RawImage.fromCanvas).
   const results = await segmenter(source);
+  const photoFrame = detectPhotoFrame(poseDetector, source);
+
+  const longSide = Math.max(width, height);
+  const erodeRadius = Math.max(1, Math.round(longSide / 600));
+  const feather = Math.max(0.8, longSide / 800);
+  const pad = Math.round(longSide * PADDING_RATIO);
 
   const garments = {};
   for (const [type, labels] of Object.entries(GARMENT_LABELS)) {
-    const parts = results.filter((r) => labels.includes(r.label));
+    const parts = results.filter((r) => labels.includes(r.label)).map((r) => r.mask);
     if (!parts.length) continue;
 
-    const { union, area } = unionMasks(parts, width, height);
-    if (area < width * height * MIN_AREA_RATIO) continue;
+    const { union, area: rawArea } = unionMasks(parts, width, height);
+    if (rawArea < width * height * MIN_AREA_RATIO) continue;
 
-    const box = boundingBox(union, width, height);
-    const canvas = cutGarment(source, union, box);
+    let { mask, area } = keepMainComponents(union, width, height);
+    if (area < width * height * MIN_AREA_RATIO) continue;
+    mask = erode(mask, width, height, erodeRadius);
+
+    const box = boundingBox(mask, width, height, pad);
+    if (!box) continue;
+
+    const canvas = cutGarment(source, mask, box, feather);
+    const frame = photoFrame
+      ? translateFrame(photoFrame, -box.x, -box.y)
+      : syntheticGarmentFrame(box.w, box.h, type);
+
     garments[type] = {
       canvas,
       aspect: box.h / box.w,
       area,
-      labels: parts.map((p) => p.label),
+      labels: results.filter((r) => labels.includes(r.label)).map((r) => r.label),
+      frame,
+      poseAligned: !!photoFrame,
     };
   }
   return garments;

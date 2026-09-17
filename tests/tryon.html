@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8" /><title>tryon client smoke test</title></head>
+<body>
+<pre id="out">running</pre>
+<script type="module">
+  // Verifies that @gradio/client loads from the CDN in the browser and that the
+  // IDM-VTON Space exposes the /tryon endpoint. Does NOT run a generation.
+  import { Client } from 'https://cdn.jsdelivr.net/npm/@gradio/client@2.6.0/+esm';
+  import { PROVIDERS } from '../src/tryon.js';
+  const out = document.getElementById('out');
+  const log = (s) => { out.textContent += '\n' + s; };
+  try {
+    const app = await Client.connect(PROVIDERS['idm-vton'].space);
+    const api = await app.view_api();
+    const ep = api.named_endpoints['/tryon'];
+    log(`endpoint /tryon params=${ep.parameters.length} returns=${ep.returns.length}`);
+    log(ep.parameters.length === 7 && ep.returns.length === 2 ? 'RESULT PASS' : 'RESULT FAIL');
+  } catch (e) {
+    log('ERROR ' + (e && e.message));
+    log('RESULT FAIL');
+  }
+</script>
+</body>
+</html>
