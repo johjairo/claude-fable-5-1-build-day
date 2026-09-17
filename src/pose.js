@@ -8,16 +8,41 @@ const MODEL_PATH =
   'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
 
 export { LM, SKELETON } from './landmarks.js';
+import { LM } from './landmarks.js';
 
-async function createLandmarker(vision, delegate) {
-  return PoseLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: MODEL_PATH, delegate },
-    runningMode: 'VIDEO',
-    numPoses: 1,
-    minPoseDetectionConfidence: 0.5,
-    minPosePresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
-  });
+let visionPromise = null;
+function getVision() {
+  if (!visionPromise) visionPromise = FilesetResolver.forVisionTasks(WASM_PATH);
+  return visionPromise;
+}
+
+async function createLandmarker(runningMode) {
+  const vision = await getVision();
+  const make = (delegate) =>
+    PoseLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_PATH, delegate },
+      runningMode,
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.5,
+      minPosePresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    });
+  try {
+    return await make('GPU');
+  } catch (err) {
+    console.warn('GPU delegate failed, falling back to CPU', err);
+    return make('CPU');
+  }
+}
+
+/** Picks the four torso joints out of a full landmark list. */
+export function torsoJoints(landmarks) {
+  return {
+    ls: landmarks[LM.L_SHOULDER],
+    rs: landmarks[LM.R_SHOULDER],
+    lh: landmarks[LM.L_HIP],
+    rh: landmarks[LM.R_HIP],
+  };
 }
 
 /**
@@ -28,15 +53,7 @@ async function createLandmarker(vision, delegate) {
  * @param {number} [opts.smoothing=0.5] EMA factor in (0,1]; 1 = no smoothing.
  */
 export async function createPoseDetector({ smoothing = 0.5 } = {}) {
-  const vision = await FilesetResolver.forVisionTasks(WASM_PATH);
-
-  let landmarker;
-  try {
-    landmarker = await createLandmarker(vision, 'GPU');
-  } catch (err) {
-    console.warn('GPU delegate failed, falling back to CPU', err);
-    landmarker = await createLandmarker(vision, 'CPU');
-  }
+  const landmarker = await createLandmarker('VIDEO');
 
   let lastVideoTime = -1;
   let smoothed = null;
@@ -80,4 +97,24 @@ export async function createPoseDetector({ smoothing = 0.5 } = {}) {
       landmarker.close();
     },
   };
+}
+
+/**
+ * Pose detector for still images (outfit photos). Lazily created, shared.
+ * @returns {Promise<{detect(source: HTMLCanvasElement|HTMLImageElement): Array|null}>}
+ */
+let imageDetectorPromise = null;
+export function getImagePoseDetector() {
+  if (!imageDetectorPromise) {
+    imageDetectorPromise = createLandmarker('IMAGE').then((landmarker) => ({
+      detect(source) {
+        const result = landmarker.detect(source);
+        return result.landmarks?.[0] ?? null;
+      },
+    }));
+    imageDetectorPromise.catch(() => {
+      imageDetectorPromise = null;
+    });
+  }
+  return imageDetectorPromise;
 }

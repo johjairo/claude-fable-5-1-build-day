@@ -1,21 +1,25 @@
 import { startCamera } from './camera.js';
-import { createPoseDetector } from './pose.js';
+import { createPoseDetector, getImagePoseDetector, torsoJoints } from './pose.js';
 import {
   loadOutfitFromFile,
   loadOutfitFromUrl,
   imageHasTransparency,
   removeWhiteBackground,
 } from './outfit.js';
-import { DEFAULTS, computePlacement, drawOutfit, drawSkeleton } from './overlay.js';
+import { DEFAULTS, landmarksToPixels, drawGarment2D, drawSkeleton } from './overlay.js';
 import { extractGarments, GARMENT_ORDER, GARMENT_NAMES } from './segment.js';
+import { frameFromJoints, syntheticGarmentFrame, scaleFrame } from './torso.js';
+import { createGarmentRenderer } from './render3d.js';
 
-const STORAGE_KEY = 'vto-settings-v1';
+const STORAGE_KEY = 'vto-settings-v2';
 const SAMPLE_OUTFIT = 'assets/sample-top.png';
 
 // ---------- DOM ----------
 const $ = (id) => document.getElementById(id);
 const video = $('video');
 const canvas = $('canvas');
+const glCanvas = $('gl');
+const frameEl = $('frame');
 const ctx = canvas.getContext('2d');
 const stage = document.querySelector('.stage');
 const statusEl = $('status');
@@ -31,6 +35,7 @@ const ui = {
   progressText: document.querySelector('#progress .progress-text'),
   garments: $('garments'),
   garmentsEmpty: $('garments-empty'),
+  enhanceBtn: $('enhance-btn'),
   type: $('type'),
   width: $('width'),
   height: $('height'),
@@ -39,6 +44,9 @@ const ui = {
   keyBg: $('key-bg'),
   threshold: $('threshold'),
   thresholdField: $('threshold-field'),
+  mode3d: $('mode3d'),
+  depth: $('depth'),
+  depthField: $('depth-field'),
   skeleton: $('skeleton'),
   mirror: $('mirror'),
   snapshotBtn: $('snapshot-btn'),
@@ -57,6 +65,8 @@ function defaultSettings() {
     opacity: 1,
     keyBg: true,
     threshold: 235,
+    mode3d: true,
+    depth: 1,
     skeleton: false,
     mirror: true,
   };
@@ -90,11 +100,9 @@ let settings = loadSettings();
 
 // ---------- Outfit state (not persisted) ----------
 /**
- * mode:
- *   'none'      nothing loaded
- *   'single'    one ready-made garment (transparent PNG or white-keyed fallback) in slot `settings.type`
- *   'segmented' garments cut out of a photo by the segmentation model
- * garments[type] = { drawable, aspect, enabled, sublabel }
+ * mode: 'none' | 'single' (transparent PNG or white-keyed fallback) | 'segmented'
+ * garments[type] = { drawable, frame, aspect, enabled, sublabel, keyed, enhanced, thumb }
+ *   frame: torso frame in drawable pixel coordinates (see torso.js)
  */
 const outfit = {
   mode: 'none',
@@ -103,9 +111,12 @@ const outfit = {
 };
 
 let detector = null;
+let renderer3d = null;
 let frameSize = { width: 0, height: 0 };
+let lastUserFrame = null;
 let toastTimer = null;
 let loadToken = 0;
+let enhancing = false;
 
 // ---------- UI helpers ----------
 function setStatus(text, kind = '') {
@@ -149,6 +160,8 @@ function syncControls() {
   ui.opacity.value = settings.opacity;
   ui.keyBg.checked = settings.keyBg;
   ui.threshold.value = settings.threshold;
+  ui.mode3d.checked = settings.mode3d;
+  ui.depth.value = settings.depth;
   ui.skeleton.checked = settings.skeleton;
   ui.mirror.checked = settings.mirror;
 
@@ -157,7 +170,13 @@ function syncControls() {
   $('offset-out').value = fmt(p.offsetY);
   $('opacity-out').value = fmt(settings.opacity);
   $('threshold-out').value = settings.threshold;
+  $('depth-out').value = fmt(settings.depth);
   ui.thresholdField.style.display = settings.keyBg ? '' : 'none';
+  ui.depthField.style.display = settings.mode3d && renderer3d ? '' : 'none';
+  ui.mode3d.disabled = !renderer3d;
+
+  const list = Object.values(outfit.garments);
+  ui.enhanceBtn.disabled = enhancing || !list.length || list.every((g) => g.enhanced);
 
   renderGarmentList();
 }
@@ -191,10 +210,14 @@ function renderGarmentList() {
     const name = document.createElement('span');
     name.className = 'garment-name';
     name.textContent = GARMENT_NAMES[type];
-    if (g.sublabel) {
+    const subParts = [];
+    if (g.sublabel) subParts.push(g.sublabel);
+    if (g.poseAligned === false) subParts.push('sin pose, ajuste aproximado');
+    if (g.enhanced) subParts.push('x2');
+    if (subParts.length) {
       const sub = document.createElement('span');
       sub.className = 'garment-sub';
-      sub.textContent = g.sublabel;
+      sub.textContent = subParts.join(' · ');
       name.appendChild(sub);
     }
     name.addEventListener('click', () => {
@@ -217,44 +240,66 @@ function renderGarmentList() {
 }
 
 // ---------- Outfit handling ----------
+function syncRenderer3d() {
+  if (!renderer3d) return;
+  renderer3d.clear();
+  GARMENT_ORDER.forEach((type, order) => {
+    const g = outfit.garments[type];
+    if (g) renderer3d.setGarment(type, g, order);
+  });
+}
+
 function clearOutfit() {
   outfit.mode = 'none';
   outfit.source = null;
   outfit.garments = {};
+  syncRenderer3d();
   renderGarmentList();
+}
+
+function drawableSize(d) {
+  return { w: d.naturalWidth || d.width, h: d.naturalHeight || d.height };
 }
 
 /** Single-garment path: transparent PNG, or opaque image with white keying. */
 function setSingleGarment(img, sublabel) {
   const hasAlpha = safeHasTransparency(img);
   const drawable = !hasAlpha && settings.keyBg ? removeWhiteBackground(img, settings.threshold) : img;
-  const w = img.naturalWidth || img.width;
-  const h = img.naturalHeight || img.height;
+  const { w, h } = drawableSize(drawable);
 
   outfit.mode = 'single';
   outfit.source = img;
   outfit.garments = {
     [settings.type]: {
       drawable,
+      frame: syntheticGarmentFrame(w, h, settings.type),
       aspect: h / w,
       enabled: true,
       sublabel,
       keyed: !hasAlpha,
+      poseAligned: false,
+      enhanced: false,
     },
   };
-  renderGarmentList();
+  syncRenderer3d();
+  syncControls();
 }
 
 /** Re-applies white keying when its settings change (single mode only). */
 function rebuildSingleGarment() {
   if (outfit.mode !== 'single' || !outfit.source) return;
-  const g = Object.values(outfit.garments)[0];
+  const type = Object.keys(outfit.garments)[0];
+  const g = outfit.garments[type];
   if (!g?.keyed) return;
   g.drawable = settings.keyBg
     ? removeWhiteBackground(outfit.source, settings.threshold)
     : outfit.source;
+  const { w, h } = drawableSize(g.drawable);
+  g.frame = syntheticGarmentFrame(w, h, type);
+  g.enhanced = false;
   g.thumb = null;
-  renderGarmentList();
+  syncRenderer3d();
+  syncControls();
 }
 
 function safeHasTransparency(img) {
@@ -265,16 +310,16 @@ function safeHasTransparency(img) {
   }
 }
 
-function progressHandler(token) {
+function progressHandler(token, label) {
   return (evt) => {
     if (token !== loadToken) return;
     if (evt.status === 'progress' && typeof evt.progress === 'number') {
       const file = (evt.file || '').split('/').pop();
-      showProgress(`Descargando modelo de prendas… ${Math.round(evt.progress)}% (${file})`, evt.progress);
+      showProgress(`Descargando ${label}… ${Math.round(evt.progress)}% (${file})`, evt.progress);
     } else if (evt.status === 'initiate') {
-      showProgress('Descargando modelo de prendas (solo la primera vez)…', 0);
+      showProgress(`Descargando ${label} (solo la primera vez)…`, 0);
     } else if (evt.status === 'ready') {
-      showProgress('Detectando prendas…');
+      showProgress('Procesando…');
     }
   };
 }
@@ -282,7 +327,7 @@ function progressHandler(token) {
 /**
  * Decides how to process a freshly loaded image:
  *  - transparent → single garment in the selected slot
- *  - opaque (JPG/JPEG/WebP…) → segmentation; if nothing detected, white-keying fallback
+ *  - opaque (JPG/JPEG/WebP…) → segmentation + pose; if nothing detected, white-keying fallback
  */
 async function processImage(img, label) {
   const token = ++loadToken;
@@ -298,7 +343,14 @@ async function processImage(img, label) {
 
   let garments;
   try {
-    garments = await extractGarments(img, progressHandler(token));
+    const poseDetector = await getImagePoseDetector().catch((err) => {
+      console.warn('Image pose detector unavailable', err);
+      return null;
+    });
+    garments = await extractGarments(img, {
+      onProgress: progressHandler(token, 'modelo de prendas'),
+      poseDetector,
+    });
   } catch (err) {
     console.error(err);
     if (token !== loadToken) return;
@@ -327,9 +379,12 @@ async function processImage(img, label) {
     const g = garments[type];
     outfit.garments[type] = {
       drawable: g.canvas,
+      frame: g.frame,
       aspect: g.aspect,
       enabled: true,
       sublabel: g.labels.join(' + '),
+      poseAligned: g.poseAligned,
+      enhanced: false,
     };
   }
 
@@ -338,8 +393,16 @@ async function processImage(img, label) {
     settings.type = GARMENT_ORDER.slice().reverse().find((t) => outfit.garments[t]);
     saveSettings();
   }
+  syncRenderer3d();
   syncControls();
-  toast(`Prendas detectadas: ${found.map((t) => GARMENT_NAMES[t].toLowerCase()).join(', ')}`);
+
+  const names = found.map((t) => GARMENT_NAMES[t].toLowerCase()).join(', ');
+  const aligned = garments[found[0]].poseAligned;
+  toast(
+    aligned
+      ? `Prendas detectadas y alineadas con la pose: ${names}`
+      : `Prendas detectadas: ${names}. No se encontró pose en la foto; ajuste aproximado.`
+  );
 }
 
 async function handleFile(file) {
@@ -368,7 +431,66 @@ async function handleUrl(url) {
   }
 }
 
+// ---------- Quality enhancement ----------
+async function enhanceAll() {
+  if (enhancing) return;
+  const entries = Object.entries(outfit.garments).filter(([, g]) => !g.enhanced);
+  if (!entries.length) return;
+
+  enhancing = true;
+  syncControls();
+  const token = loadToken;
+  const { upscaleGarment } = await import('./enhance.js');
+
+  try {
+    let i = 0;
+    for (const [type, g] of entries) {
+      i++;
+      showProgress(`Mejorando ${GARMENT_NAMES[type].toLowerCase()} (${i}/${entries.length})…`);
+      const { canvas: up, scale } = await upscaleGarment(g.drawable, progressHandler(token, 'modelo de calidad'));
+      if (token !== loadToken || outfit.garments[type] !== g) return; // outfit changed meanwhile
+      g.drawable = up;
+      g.frame = scaleFrame(g.frame, scale);
+      g.enhanced = true;
+      g.thumb = null;
+      if (renderer3d) renderer3d.setGarment(type, g, GARMENT_ORDER.indexOf(type));
+      renderGarmentList();
+    }
+    toast('Calidad mejorada (x2)');
+  } catch (err) {
+    console.error(err);
+    toast('No se pudo mejorar la calidad. Revisa la conexión o intenta de nuevo.', 'error');
+  } finally {
+    enhancing = false;
+    hideProgress();
+    cameraReady();
+    syncControls();
+  }
+}
+
+// ---------- Layout ----------
+/** Sizes the frame wrapper to the video aspect ratio inside the stage. */
+function fitFrame() {
+  const { width, height } = frameSize;
+  if (!width) return;
+  const sw = stage.clientWidth;
+  const sh = stage.clientHeight;
+  const scale = Math.min(sw / width, sh / height);
+  frameEl.style.width = `${Math.floor(width * scale)}px`;
+  frameEl.style.height = `${Math.floor(height * scale)}px`;
+}
+
 // ---------- Render loop ----------
+function paramsByType() {
+  return settings.params;
+}
+
+function enabledByType() {
+  const out = {};
+  for (const type of GARMENT_ORDER) out[type] = !!outfit.garments[type]?.enabled;
+  return out;
+}
+
 function render() {
   const { width, height } = frameSize;
   if (!width) {
@@ -376,6 +498,7 @@ function render() {
     return;
   }
 
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.save();
   if (settings.mirror) {
     ctx.translate(width, 0);
@@ -385,31 +508,47 @@ function render() {
   ctx.restore();
 
   const landmarks = detector ? detector.detect(video) : null;
+  let userFrame = null;
+  let pixels = null;
 
   if (landmarks) {
-    for (const type of GARMENT_ORDER) {
-      const g = outfit.garments[type];
-      if (!g || !g.enabled) continue;
-      const placement = computePlacement(
-        landmarks,
-        type,
-        settings.params[type],
-        g.aspect,
-        width,
-        height,
-        settings.mirror
-      );
-      if (placement) drawOutfit(ctx, g.drawable, placement, settings.opacity);
-    }
-    if (settings.skeleton) drawSkeleton(ctx, landmarks, width, height, settings.mirror);
+    pixels = landmarksToPixels(landmarks, width, height, settings.mirror);
+    userFrame = frameFromJoints(torsoJoints(pixels));
   }
+  lastUserFrame = userFrame;
+
+  const use3d = settings.mode3d && renderer3d;
+  if (use3d) {
+    renderer3d.render(userFrame, paramsByType(), enabledByType(), settings.opacity, settings.depth);
+  } else {
+    if (renderer3d) renderer3d.render(null, paramsByType(), enabledByType(), 0, 0);
+    if (userFrame) {
+      for (const type of GARMENT_ORDER) {
+        const g = outfit.garments[type];
+        if (!g || !g.enabled) continue;
+        drawGarment2D(ctx, g.drawable, g.frame, userFrame, settings.params[type], settings.opacity);
+      }
+    }
+  }
+
+  if (pixels && settings.skeleton) drawSkeleton(ctx, pixels);
 
   requestAnimationFrame(render);
 }
 
 // ---------- Snapshot ----------
 function takeSnapshot() {
-  canvas.toBlob((blob) => {
+  const out = document.createElement('canvas');
+  out.width = canvas.width;
+  out.height = canvas.height;
+  const octx = out.getContext('2d');
+  octx.drawImage(canvas, 0, 0);
+  if (settings.mode3d && renderer3d) {
+    // Re-render so the WebGL buffer is populated at copy time.
+    renderer3d.render(lastUserFrame, paramsByType(), enabledByType(), settings.opacity, settings.depth);
+    octx.drawImage(glCanvas, 0, 0, out.width, out.height);
+  }
+  out.toBlob((blob) => {
     if (!blob) return toast('No se pudo generar la foto.', 'error');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -423,6 +562,7 @@ function takeSnapshot() {
 // ---------- Reset ----------
 function resetAll() {
   loadToken++;
+  enhancing = false;
   hideProgress();
   settings = defaultSettings();
   localStorage.removeItem(STORAGE_KEY);
@@ -452,15 +592,22 @@ function bindEvents() {
     if (url) handleUrl(url);
   });
 
+  ui.enhanceBtn.addEventListener('click', enhanceAll);
+
   ui.type.addEventListener('change', () => {
     const newType = ui.type.value;
     // In single mode the select decides where the garment goes: move it.
     if (outfit.mode === 'single') {
       const g = outfit.garments[settings.type];
-      outfit.garments = g ? { [newType]: g } : {};
+      if (g) {
+        const { w, h } = drawableSize(g.drawable);
+        g.frame = syntheticGarmentFrame(w, h, newType);
+        outfit.garments = { [newType]: g };
+      }
     }
     settings.type = newType;
     saveSettings();
+    syncRenderer3d();
     syncControls();
   });
 
@@ -495,6 +642,18 @@ function bindEvents() {
     rebuildSingleGarment();
   });
 
+  ui.mode3d.addEventListener('change', () => {
+    settings.mode3d = ui.mode3d.checked;
+    saveSettings();
+    syncControls();
+  });
+
+  ui.depth.addEventListener('input', () => {
+    settings.depth = parseFloat(ui.depth.value);
+    saveSettings();
+    syncControls();
+  });
+
   ui.skeleton.addEventListener('change', () => {
     settings.skeleton = ui.skeleton.checked;
     saveSettings();
@@ -507,6 +666,8 @@ function bindEvents() {
 
   ui.snapshotBtn.addEventListener('click', takeSnapshot);
   ui.resetBtn.addEventListener('click', resetAll);
+
+  window.addEventListener('resize', fitFrame);
 
   // Drag & drop onto the stage.
   ['dragenter', 'dragover'].forEach((evt) =>
@@ -542,6 +703,9 @@ function bindEvents() {
 
 // ---------- Boot ----------
 async function main() {
+  renderer3d = createGarmentRenderer(glCanvas);
+  if (!renderer3d) toast('WebGL no disponible: se usa el modo 2D.', 'error');
+
   syncControls();
   bindEvents();
 
@@ -550,6 +714,8 @@ async function main() {
     frameSize = await startCamera(video);
     canvas.width = frameSize.width;
     canvas.height = frameSize.height;
+    if (renderer3d) renderer3d.resize(frameSize.width, frameSize.height);
+    fitFrame();
   } catch (err) {
     console.error(err);
     setStatus('Sin acceso a la cámara', 'error');

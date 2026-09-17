@@ -15,7 +15,10 @@
     <main class="layout">
       <section class="stage">
         <video id="video" playsinline muted></video>
-        <canvas id="canvas"></canvas>
+        <div id="frame" class="frame">
+          <canvas id="canvas"></canvas>
+          <canvas id="gl"></canvas>
+        </div>
         <div id="dropzone" class="dropzone">Suelta aquí la imagen del outfit</div>
       </section>
 
@@ -51,6 +54,11 @@
         </div>
 
         <div class="field">
+          <button id="enhance-btn" class="btn" type="button" disabled>Mejorar calidad (x2)</button>
+          <span class="hint small">Súper-resolución con Swin2SR en el navegador. Tarda unos segundos por prenda.</span>
+        </div>
+
+        <div class="field">
           <label for="type">Prenda a ajustar</label>
           <select id="type">
             <option value="top">Parte superior (camisa, chaqueta)</option>
@@ -59,7 +67,7 @@
           </select>
           <span class="hint small">
             Para PNG transparentes define dónde se coloca. Para fotos JPG las prendas se detectan
-            automáticamente.
+            y alinean solas con hombros y caderas.
           </span>
         </div>
 
@@ -67,15 +75,15 @@
 
         <div class="field">
           <label for="width">Ancho <output id="width-out"></output></label>
-          <input id="width" type="range" min="1" max="3.5" step="0.05" />
+          <input id="width" type="range" min="0.5" max="2" step="0.01" />
         </div>
         <div class="field">
           <label for="height">Alto <output id="height-out"></output></label>
-          <input id="height" type="range" min="0.5" max="2" step="0.05" />
+          <input id="height" type="range" min="0.5" max="2" step="0.01" />
         </div>
         <div class="field">
           <label for="offset">Posición vertical <output id="offset-out"></output></label>
-          <input id="offset" type="range" min="-0.6" max="0.6" step="0.01" />
+          <input id="offset" type="range" min="-0.5" max="0.5" step="0.01" />
         </div>
         <div class="field">
           <label for="opacity">Opacidad <output id="opacity-out"></output></label>
@@ -88,6 +96,14 @@
         <div class="field" id="threshold-field">
           <label for="threshold">Umbral de blanco <output id="threshold-out"></output></label>
           <input id="threshold" type="range" min="180" max="255" step="1" />
+        </div>
+
+        <div class="field check">
+          <label><input id="mode3d" type="checkbox" checked /> Modo 3D (perspectiva)</label>
+        </div>
+        <div class="field" id="depth-field">
+          <label for="depth">Profundidad 3D <output id="depth-out"></output></label>
+          <input id="depth" type="range" min="0" max="2" step="0.05" />
         </div>
 
         <div class="field check">
