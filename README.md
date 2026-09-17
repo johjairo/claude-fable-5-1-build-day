@@ -98,6 +98,14 @@ tests/tryon.html     prueba de humo: carga @gradio/client y consulta la API del 
 - Oclusión: ocultar la prenda donde los brazos pasan por delante usando segmentación del usuario.
 - Varias prendas a la vez (superior + inferior).
 
+## Variante open source autocontenida
+
+`open-source-tryon/index.html` es un solo archivo HTML que captura tu foto con la cámara y genera la imagen con un modelo
+open source de try-on (IDM-VTON en un Space ZeroGPU de Hugging Face): la idea «Generar foto realista» de la lista anterior,
+construida a partir de `prompts/virtual-tryon-open-source.md`. Se abre con doble clic (funciona desde `file://`, sin servidor). `open-source-tryon/custom-garment.html` es la misma página
+con una barra para pegar el enlace directo a la imagen de cualquier prenda.
+Qué vía se eligió y por qué, límites medidos (cuota ZeroGPU, tiempos) y plan de ensayo: `open-source-tryon/README.md`.
+
 ## Convenciones
 
 - Documentación (`README.md`, `CLAUDE.md`) en **español**.
