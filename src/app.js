@@ -10,6 +10,7 @@ import { DEFAULTS, landmarksToPixels, drawGarment2D, drawSkeleton } from './over
 import { extractGarments, GARMENT_ORDER, GARMENT_NAMES } from './segment.js';
 import { frameFromJoints, syntheticGarmentFrame, scaleFrame } from './torso.js';
 import { createGarmentRenderer } from './render3d.js';
+import { generateTryOn, canvasToBlob } from './tryon.js';
 
 const STORAGE_KEY = 'vto-settings-v2';
 const SAMPLE_OUTFIT = 'assets/sample-top.png';
@@ -51,6 +52,17 @@ const ui = {
   mirror: $('mirror'),
   snapshotBtn: $('snapshot-btn'),
   resetBtn: $('reset-btn'),
+  generateBtn: $('generate-btn'),
+  garmentDes: $('garment-des'),
+  steps: $('steps'),
+  hfToken: $('hf-token'),
+  result: $('result'),
+  resultStatus: $('result-status'),
+  resultBefore: $('result-before'),
+  resultAfter: $('result-after'),
+  resultDownload: $('result-download'),
+  resultCancel: $('result-cancel'),
+  resultClose: $('result-close'),
 };
 
 // ---------- Settings (persisted) ----------
@@ -69,6 +81,9 @@ function defaultSettings() {
     depth: 1,
     skeleton: false,
     mirror: true,
+    steps: 30,
+    garmentDes: '',
+    hfToken: '',
   };
 }
 
@@ -117,6 +132,7 @@ let lastUserFrame = null;
 let toastTimer = null;
 let loadToken = 0;
 let enhancing = false;
+let generating = null; // { controller, before, after }
 
 // ---------- UI helpers ----------
 function setStatus(text, kind = '') {
@@ -177,6 +193,12 @@ function syncControls() {
 
   const list = Object.values(outfit.garments);
   ui.enhanceBtn.disabled = enhancing || !list.length || list.every((g) => g.enhanced);
+
+  ui.steps.value = settings.steps;
+  $('steps-out').value = settings.steps;
+  ui.garmentDes.value = settings.garmentDes;
+  ui.hfToken.value = settings.hfToken;
+  ui.generateBtn.disabled = !!generating || !outfit.source || !frameSize.width;
 
   renderGarmentList();
 }
@@ -468,6 +490,154 @@ async function enhanceAll() {
   }
 }
 
+// ---------- Generative try-on ----------
+function garmentCategory() {
+  const types = Object.keys(outfit.garments);
+  if (types.includes('dress')) return 'dress';
+  if (types.includes('top')) return 'top';
+  if (types.includes('bottom')) return 'bottom';
+  return settings.type;
+}
+
+function sourceToCanvas(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth || img.width;
+  c.height = img.naturalHeight || img.height;
+  c.getContext('2d').drawImage(img, 0, 0);
+  return c;
+}
+
+/**
+ * Image handed to the try-on model as "garment". IDM-VTON was trained on flat
+ * product shots, so a segmented cut-out composited on white (with margin) works
+ * better than the original photo of a person wearing it. Falls back to the source.
+ */
+function garmentCanvasFor(category) {
+  const g = outfit.garments[category];
+  if (!g?.drawable) return sourceToCanvas(outfit.source);
+  const gw = g.drawable.naturalWidth || g.drawable.width;
+  const gh = g.drawable.naturalHeight || g.drawable.height;
+  const side = Math.round(Math.max(gw, gh) * 1.2);
+  const c = document.createElement('canvas');
+  c.width = Math.round(side * 0.75);
+  c.height = side;
+  const cctx = c.getContext('2d');
+  cctx.fillStyle = '#ffffff';
+  cctx.fillRect(0, 0, c.width, c.height);
+  const scale = Math.min((c.width * 0.9) / gw, (c.height * 0.9) / gh);
+  const dw = gw * scale;
+  const dh = gh * scale;
+  cctx.drawImage(g.drawable, (c.width - dw) / 2, (c.height - dh) / 2, dw, dh);
+  return c;
+}
+
+/** Camera frame without overlays, mirrored as the user sees it. */
+function capturePerson() {
+  const { width, height } = frameSize;
+  const c = document.createElement('canvas');
+  c.width = width;
+  c.height = height;
+  const cctx = c.getContext('2d');
+  if (settings.mirror) {
+    cctx.translate(width, 0);
+    cctx.scale(-1, 1);
+  }
+  cctx.drawImage(video, 0, 0, width, height);
+  return c;
+}
+
+function setResultStatus(text) {
+  ui.resultStatus.textContent = text;
+}
+
+function openResult(beforeUrl) {
+  ui.result.hidden = false;
+  ui.resultBefore.src = beforeUrl;
+  ui.resultAfter.removeAttribute('src');
+  ui.resultAfter.parentElement.classList.add('loading');
+  ui.resultDownload.disabled = true;
+  ui.resultCancel.hidden = false;
+}
+
+function closeResult() {
+  ui.result.hidden = true;
+  if (generating?.before) URL.revokeObjectURL(generating.before);
+  if (generating?.after?.startsWith('blob:')) URL.revokeObjectURL(generating.after);
+  if (!generating?.controller.signal.aborted && generating?.running) generating.controller.abort();
+  generating = null;
+  syncControls();
+}
+
+async function generate() {
+  if (generating || !outfit.source || !frameSize.width) return;
+
+  const controller = new AbortController();
+  const personCanvas = capturePerson();
+  const beforeUrl = URL.createObjectURL(await canvasToBlob(personCanvas, 1024, 'image/jpeg', 0.9));
+  generating = { controller, before: beforeUrl, after: null, running: true };
+  syncControls();
+  openResult(beforeUrl);
+  setResultStatus('Preparando imágenes…');
+
+  try {
+    const category = garmentCategory();
+    const [personBlob, garmentBlob] = await Promise.all([
+      canvasToBlob(personCanvas, 1024, 'image/jpeg', 0.92),
+      canvasToBlob(garmentCanvasFor(category), 1024, 'image/jpeg', 0.92),
+    ]);
+
+    const { blob, url } = await generateTryOn({
+      personBlob,
+      garmentBlob,
+      category,
+      description: settings.garmentDes.trim(),
+      steps: settings.steps,
+      hfToken: settings.hfToken.trim() || undefined,
+      signal: controller.signal,
+      onStatus: (st) => {
+        if (st.stage === 'connecting') setResultStatus('Conectando con el modelo…');
+        else if (st.stage === 'pending' && st.position != null && st.position > 0) {
+          setResultStatus(`En cola: posición ${st.position}${st.eta ? `, ~${Math.round(st.eta)} s` : ''}`);
+        } else if (st.stage === 'pending') setResultStatus('Generando… (20–60 s)');
+        else if (st.stage === 'downloading') setResultStatus('Descargando resultado…');
+        else if (st.stage === 'generating') setResultStatus('Generando…');
+      },
+    });
+
+    if (controller.signal.aborted) return;
+    const afterUrl = blob ? URL.createObjectURL(blob) : url;
+    generating.after = afterUrl;
+    generating.running = false;
+    ui.resultAfter.src = afterUrl;
+    ui.resultAfter.parentElement.classList.remove('loading');
+    ui.resultDownload.disabled = false;
+    ui.resultCancel.hidden = true;
+    setResultStatus('Listo');
+    toast('Prueba generada con IA');
+  } catch (err) {
+    if (err?.name === 'AbortError') {
+      setResultStatus('Cancelado');
+    } else {
+      console.error(err);
+      setResultStatus(`Error: ${err.message}`);
+      toast(`No se pudo generar: ${err.message}`, 'error');
+    }
+    if (generating) generating.running = false;
+    ui.resultCancel.hidden = true;
+    ui.resultAfter.parentElement.classList.remove('loading');
+  } finally {
+    syncControls();
+  }
+}
+
+function downloadResult() {
+  if (!generating?.after) return;
+  const a = document.createElement('a');
+  a.href = generating.after;
+  a.download = `tryon-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+  a.click();
+}
+
 // ---------- Layout ----------
 /** Sizes the frame wrapper to the video aspect ratio inside the stage. */
 function fitFrame() {
@@ -563,6 +733,7 @@ function takeSnapshot() {
 function resetAll() {
   loadToken++;
   enhancing = false;
+  closeResult();
   hideProgress();
   settings = defaultSettings();
   localStorage.removeItem(STORAGE_KEY);
@@ -667,6 +838,34 @@ function bindEvents() {
   ui.snapshotBtn.addEventListener('click', takeSnapshot);
   ui.resetBtn.addEventListener('click', resetAll);
 
+  ui.generateBtn.addEventListener('click', generate);
+  ui.resultClose.addEventListener('click', closeResult);
+  ui.resultCancel.addEventListener('click', () => {
+    generating?.controller.abort();
+    setResultStatus('Cancelando…');
+  });
+  ui.resultDownload.addEventListener('click', downloadResult);
+  ui.result.addEventListener('click', (e) => {
+    if (e.target === ui.result && !generating?.running) closeResult();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !ui.result.hidden && !generating?.running) closeResult();
+  });
+
+  ui.steps.addEventListener('input', () => {
+    settings.steps = parseInt(ui.steps.value, 10);
+    saveSettings();
+    $('steps-out').value = settings.steps;
+  });
+  ui.garmentDes.addEventListener('input', () => {
+    settings.garmentDes = ui.garmentDes.value;
+    saveSettings();
+  });
+  ui.hfToken.addEventListener('input', () => {
+    settings.hfToken = ui.hfToken.value;
+    saveSettings();
+  });
+
   window.addEventListener('resize', fitFrame);
 
   // Drag & drop onto the stage.
@@ -716,6 +915,7 @@ async function main() {
     canvas.height = frameSize.height;
     if (renderer3d) renderer3d.resize(frameSize.width, frameSize.height);
     fitFrame();
+    syncControls();
   } catch (err) {
     console.error(err);
     setStatus('Sin acceso a la cámara', 'error');

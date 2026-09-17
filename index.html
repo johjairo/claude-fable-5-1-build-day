@@ -9,7 +9,10 @@
   <body>
     <header class="topbar">
       <h1>Probador virtual</h1>
-      <span id="status" class="status">Iniciando…</span>
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <a href="presentation.html" class="btn ghost" style="padding: 4px 10px; font-size: 12px; text-decoration: none;">📊 Presentación</a>
+        <span id="status" class="status">Iniciando…</span>
+      </div>
     </header>
 
     <main class="layout">
@@ -57,6 +60,36 @@
           <button id="enhance-btn" class="btn" type="button" disabled>Mejorar calidad (x2)</button>
           <span class="hint small">Súper-resolución con Swin2SR en el navegador. Tarda unos segundos por prenda.</span>
         </div>
+
+        <h2>Generar con IA</h2>
+
+        <div class="field">
+          <button id="generate-btn" class="btn primary" type="button" disabled>Generar prueba realista</button>
+          <span class="hint small">
+            Toma tu imagen actual de la cámara y la foto del outfit, y un modelo de difusión
+            (IDM-VTON, open source, en un Space gratuito de Hugging Face) genera cómo te queda de
+            verdad. Tarda 20–90 s. No es en vivo.
+          </span>
+        </div>
+
+        <div class="field">
+          <label for="garment-des">Descripción de la prenda (opcional)</label>
+          <input id="garment-des" type="text" placeholder="camiseta negra de algodón" autocomplete="off" />
+        </div>
+
+        <div class="field row">
+          <label for="steps" class="inline">Pasos <output id="steps-out"></output></label>
+          <input id="steps" type="range" min="15" max="40" step="1" />
+        </div>
+
+        <details class="advanced">
+          <summary>Avanzado</summary>
+          <div class="field">
+            <label for="hf-token">Token de Hugging Face (opcional, más cuota GPU)</label>
+            <input id="hf-token" type="password" placeholder="hf_…" autocomplete="off" />
+            <span class="hint small">Se guarda solo en este navegador. Créalo en huggingface.co/settings/tokens (permiso "read").</span>
+          </div>
+        </details>
 
         <div class="field">
           <label for="type">Prenda a ajustar</label>
@@ -124,6 +157,30 @@
         </p>
       </aside>
     </main>
+
+    <div id="result" class="result" hidden>
+      <div class="result-card">
+        <header>
+          <h2>Resultado IA</h2>
+          <span id="result-status" class="status"></span>
+          <button id="result-close" class="btn ghost" type="button">Cerrar</button>
+        </header>
+        <div class="compare">
+          <figure>
+            <img id="result-before" alt="Tu foto" />
+            <figcaption>Antes</figcaption>
+          </figure>
+          <figure>
+            <img id="result-after" alt="Con el outfit" />
+            <figcaption>Después</figcaption>
+          </figure>
+        </div>
+        <footer>
+          <button id="result-download" class="btn" type="button" disabled>Descargar</button>
+          <button id="result-cancel" class="btn ghost" type="button">Cancelar</button>
+        </footer>
+      </div>
+    </div>
 
     <div id="toast" class="toast" hidden></div>
 

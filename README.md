@@ -18,7 +18,8 @@ Página web que abre tu cámara, detecta tu cuerpo en tiempo real y dibuja encim
 5. En vivo, ese marco se re-expresa en tu propio torso: los hombros de la prenda caen en tus hombros y las caderas en tus caderas. En **modo 3D** la prenda es una malla de [three.js](https://threejs.org) cuyos vértices se colocan en 3D usando la profundidad (z) de MediaPipe, con cámara en perspectiva: la prenda gira e inclina contigo. En modo 2D es un mapeo afín equivalente sobre el canvas.
 6. **Mejorar calidad (x2)**: súper-resolución de la prenda recortada con [Swin2SR lightweight](https://huggingface.co/Xenova/swin2SR-lightweight-x2-64) (open source, en el navegador). La transparencia se preserva.
 7. Si la imagen es un **PNG con transparencia**, se usa tal cual en la ranura elegida en "Prenda a ajustar", con un marco de torso sintético.
-8. Todo ocurre en el cliente: sin backend, sin API keys. Los modelos se descargan la primera vez (~29 MB ropa, ~7 MB súper-resolución) y quedan en caché del navegador.
+8. **Generar prueba realista (IA generativa)**: toma tu frame de cámara y la prenda, y los envía a [IDM-VTON](https://github.com/yisol/IDM-VTON) (modelo de difusión open source) corriendo en el Space público `yisol/IDM-VTON` de Hugging Face (ZeroGPU, gratis). Devuelve una imagen tuya con la prenda realmente puesta: pliegues, ajuste al cuerpo, oclusión de brazos. Tarda 20–90 s; es una foto, no video en vivo. Se llama desde el navegador con `@gradio/client`, sin backend ni API key. Un token de Hugging Face (opcional) aumenta la cuota de GPU.
+9. Lo demás ocurre en el cliente: sin backend, sin API keys. Los modelos locales se descargan la primera vez (~29 MB ropa, ~7 MB súper-resolución) y quedan en caché del navegador.
 
 ## Cómo correr
 
@@ -44,6 +45,7 @@ Alternativa con Node: `npx serve .`
 - **Prenda a ajustar**: a qué prenda aplican los sliders. Para PNG transparentes también define dónde se coloca (hombros o caderas).
 - **Ajustes**: ancho, alto y posición vertical son multiplicadores sobre el marco de torso (1 / 1 / 0 = exactamente como la llevaba la persona de la foto). Opacidad global. Se guardan en el navegador por tipo de prenda.
 - **Modo 3D (perspectiva)** y **Profundidad 3D**: activa la malla three.js y cuánto pesa la coordenada z de MediaPipe (0 = plano).
+- **Generar prueba realista**: abre un panel Antes / Después. Se puede cancelar y descargar. "Pasos" (15–40) cambia calidad vs. tiempo; "Descripción de la prenda" ayuda al modelo (p. ej. "camiseta negra de algodón"). En Avanzado se puede pegar un token de Hugging Face si la cuota gratuita se agota (error "GPU quota").
 - **Quitar fondo blanco**: respaldo cuando la foto no tiene personas y el modelo no detecta prendas (p. ej. foto de producto sobre blanco). Ajusta el umbral si quedan restos.
 - **Mostrar esqueleto**: depuración, muestra los puntos detectados.
 - **Tomar foto**: descarga un PNG con el outfit puesto.
@@ -55,6 +57,8 @@ Consejos: párate de frente a 1–2 m de la cámara, con buena luz. Funciona mej
 
 ```
 index.html        UI (español)
+presentation.html Diapositivas interactivas para la demo (pitch deck)
+PRESENTACION.md   Guion, tiempos, playbook de demo en vivo y Q&A
 styles.css        estilos
 src/app.js        arranque, estado, eventos, loop de render
 src/camera.js     getUserMedia
@@ -66,15 +70,20 @@ src/mask.js       utilidades de máscara binaria (componentes conexas, erosión,
 src/torso.js      marco de torso: conversión prenda ↔ usuario (2D afín y 3D)
 src/render3d.js   capa three.js: malla por prenda, cámara en perspectiva alineada al video
 src/enhance.js    súper-resolución x2 (Swin2SR) preservando alpha
+src/tryon.js      try-on generativo: cliente del Space IDM-VTON (@gradio/client)
 src/overlay.js    dibujo 2D (fallback) y esqueleto de depuración
 assets/           prenda de ejemplo
 prompts/          prompts para explorar variantes en sesiones nuevas de Claude Code
 tests/unit.mjs    tests de torso.js y mask.js (`node tests/unit.mjs`)
 tests/render3d.html  prueba de humo de la capa 3D (abrir servido por HTTP)
+tests/tryon.html     prueba de humo: carga @gradio/client y consulta la API del Space
 ```
 
 ## Limitaciones conocidas
 
+- El try-on generativo depende de un Space público: puede tener cola o agotar la cuota gratuita de ZeroGPU en horas pico. Un token de HF (gratis) da más cuota. Alternativa con API de pago: Replicate / fal.ai ofrecen IDM-VTON y CatVTON, pero necesitan un pequeño proxy para no exponer la key en el navegador.
+- IDM-VTON funciona mejor con foto de prenda tipo producto (plana, fondo blanco). Por eso se le envía el recorte segmentado sobre blanco, no la foto original.
+- Vista previa en vivo (overlay / 3D):
 - La prenda es una textura sobre una malla que sigue el torso; no simula tela ni respeta oclusiones (brazos por delante).
 - La prenda recortada conserva la pose de la persona de la foto; si estaba de lado o con brazos cruzados, se verá así. Fotos de frente dan el mejor resultado.
 - La coordenada z de MediaPipe es aproximada; con "Profundidad 3D" alta puede exagerar la perspectiva.
@@ -83,7 +92,8 @@ tests/render3d.html  prueba de humo de la capa 3D (abrir servido por HTTP)
 
 ## Ideas siguientes
 
-- Botón "Generar foto realista" con un modelo de try-on generativo (IDM-VTON, CatVTON, Leffa; open source pero necesitan GPU en servidor) a partir de una captura.
+- Proveedor alternativo de try-on vía proxy (Replicate `cuuupid/idm-vton`, fal `fal-ai/cat-vton`) para no depender del Space público.
+- Try-on generativo por video (frame a frame es demasiado lento hoy; ver ViViD / modelos de video try-on).
 - Deformar la malla también con codos/muñecas para que las mangas sigan los brazos.
 - Oclusión: ocultar la prenda donde los brazos pasan por delante usando segmentación del usuario.
 - Varias prendas a la vez (superior + inferior).
