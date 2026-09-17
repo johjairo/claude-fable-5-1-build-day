@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Probador virtual · Build Day</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Probador virtual</h1>
+      <span id="status" class="status">Iniciando…</span>
+    </header>
+
+    <main class="layout">
+      <section class="stage">
+        <video id="video" playsinline muted></video>
+        <canvas id="canvas"></canvas>
+        <div id="dropzone" class="dropzone">Suelta aquí la imagen del outfit</div>
+      </section>
+
+      <aside class="panel">
+        <h2>Outfit</h2>
+
+        <div class="field">
+          <label class="btn file-btn">
+            Subir foto
+            <input id="file-input" type="file" accept="image/*" hidden />
+          </label>
+          <button id="sample-btn" class="btn ghost" type="button">Usar ejemplo</button>
+        </div>
+
+        <form id="url-form" class="field row">
+          <input
+            id="url-input"
+            type="url"
+            placeholder="https://…/outfit.png"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="btn" type="submit">Cargar</button>
+        </form>
+
+        <div class="preview">
+          <img id="thumb" alt="Vista previa del outfit" hidden />
+          <span id="thumb-empty">Sin outfit cargado</span>
+        </div>
+
+        <div class="field">
+          <label for="type">Tipo de prenda</label>
+          <select id="type">
+            <option value="top">Parte superior (camisa, chaqueta)</option>
+            <option value="dress">Vestido / cuerpo completo</option>
+            <option value="bottom">Parte inferior (pantalón, falda)</option>
+          </select>
+        </div>
+
+        <h2>Ajustes</h2>
+
+        <div class="field">
+          <label for="width">Ancho <output id="width-out"></output></label>
+          <input id="width" type="range" min="1" max="3.5" step="0.05" />
+        </div>
+        <div class="field">
+          <label for="height">Alto <output id="height-out"></output></label>
+          <input id="height" type="range" min="0.5" max="2" step="0.05" />
+        </div>
+        <div class="field">
+          <label for="offset">Posición vertical <output id="offset-out"></output></label>
+          <input id="offset" type="range" min="-0.6" max="0.6" step="0.01" />
+        </div>
+        <div class="field">
+          <label for="opacity">Opacidad <output id="opacity-out"></output></label>
+          <input id="opacity" type="range" min="0.2" max="1" step="0.05" />
+        </div>
+
+        <div class="field check">
+          <label><input id="key-bg" type="checkbox" /> Quitar fondo blanco</label>
+        </div>
+        <div class="field" id="threshold-field">
+          <label for="threshold">Umbral de blanco <output id="threshold-out"></output></label>
+          <input id="threshold" type="range" min="180" max="255" step="1" />
+        </div>
+
+        <div class="field check">
+          <label><input id="skeleton" type="checkbox" /> Mostrar esqueleto</label>
+        </div>
+        <div class="field check">
+          <label><input id="mirror" type="checkbox" checked /> Modo espejo</label>
+        </div>
+
+        <div class="field row">
+          <button id="snapshot-btn" class="btn primary" type="button">Tomar foto</button>
+          <button id="reset-btn" class="btn ghost" type="button">Restablecer</button>
+        </div>
+
+        <p class="hint">
+          Consejo: usa imágenes PNG con fondo transparente o fotos de producto sobre fondo
+          blanco. Párate de frente, a 1–2 m de la cámara.
+        </p>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" hidden></div>
+
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>

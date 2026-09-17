@@ -1,0 +1,272 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --border: #262b36;
+  --text: #e6e8ee;
+  --muted: #8b93a7;
+  --accent: #6ee7b7;
+  --accent-dark: #10b981;
+  --danger: #f87171;
+  --radius: 10px;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.status {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.status.ok {
+  color: var(--accent);
+}
+
+.status.error {
+  color: var(--danger);
+}
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 16px;
+  padding: 16px;
+  min-height: 0;
+}
+
+.stage {
+  position: relative;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 360px;
+}
+
+.stage video {
+  display: none;
+}
+
+.stage canvas {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  display: block;
+}
+
+.dropzone {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(16, 185, 129, 0.25);
+  border: 3px dashed var(--accent);
+  font-size: 20px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.stage.dragging .dropzone {
+  display: flex;
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.panel h2 {
+  margin: 4px 0 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field.row {
+  flex-direction: row;
+  align-items: center;
+}
+
+.field.row > * {
+  flex: 1;
+}
+
+.field.check label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.field label {
+  font-size: 13px;
+  color: var(--text);
+  display: flex;
+  justify-content: space-between;
+}
+
+.field output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+input[type='url'],
+select {
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f1218;
+  color: var(--text);
+  font-size: 14px;
+}
+
+input[type='range'] {
+  width: 100%;
+  accent-color: var(--accent-dark);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #1f2430;
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+  text-align: center;
+  user-select: none;
+}
+
+.btn:hover {
+  background: #262c3a;
+}
+
+.btn.primary {
+  background: var(--accent-dark);
+  border-color: var(--accent-dark);
+  color: #04120c;
+  font-weight: 600;
+}
+
+.btn.primary:hover {
+  background: var(--accent);
+}
+
+.btn.ghost {
+  background: transparent;
+}
+
+.file-btn {
+  flex: 1;
+}
+
+.preview {
+  height: 120px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    repeating-conic-gradient(#1b1f28 0% 25%, #12151c 0% 50%) 50% / 16px 16px;
+  overflow: hidden;
+}
+
+.preview img {
+  max-height: 100%;
+  max-width: 100%;
+}
+
+.preview span {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  background: #1f2430;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  max-width: 90vw;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.toast.error {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    order: 2;
+  }
+}
