@@ -7,6 +7,7 @@ import {
   removeWhiteBackground,
 } from './outfit.js';
 import { DEFAULTS, computePlacement, drawOutfit, drawSkeleton } from './overlay.js';
+import { extractGarments, GARMENT_ORDER, GARMENT_NAMES } from './segment.js';
 
 const STORAGE_KEY = 'vto-settings-v1';
 const SAMPLE_OUTFIT = 'assets/sample-top.png';
@@ -19,14 +20,17 @@ const ctx = canvas.getContext('2d');
 const stage = document.querySelector('.stage');
 const statusEl = $('status');
 const toastEl = $('toast');
-const thumb = $('thumb');
-const thumbEmpty = $('thumb-empty');
 
 const ui = {
   fileInput: $('file-input'),
   sampleBtn: $('sample-btn'),
   urlForm: $('url-form'),
   urlInput: $('url-input'),
+  progress: $('progress'),
+  progressBar: document.querySelector('#progress .progress-bar'),
+  progressText: document.querySelector('#progress .progress-text'),
+  garments: $('garments'),
+  garmentsEmpty: $('garments-empty'),
   type: $('type'),
   width: $('width'),
   height: $('height'),
@@ -41,7 +45,7 @@ const ui = {
   resetBtn: $('reset-btn'),
 };
 
-// ---------- State ----------
+// ---------- Settings (persisted) ----------
 function defaultSettings() {
   return {
     type: 'top',
@@ -51,7 +55,7 @@ function defaultSettings() {
       bottom: { ...DEFAULTS.bottom },
     },
     opacity: 1,
-    keyBg: false,
+    keyBg: true,
     threshold: 235,
     skeleton: false,
     mirror: true,
@@ -84,17 +88,24 @@ function saveSettings() {
 
 let settings = loadSettings();
 
-/** Original loaded image (HTMLImageElement) and processed drawable (image or canvas). */
+// ---------- Outfit state (not persisted) ----------
+/**
+ * mode:
+ *   'none'      nothing loaded
+ *   'single'    one ready-made garment (transparent PNG or white-keyed fallback) in slot `settings.type`
+ *   'segmented' garments cut out of a photo by the segmentation model
+ * garments[type] = { drawable, aspect, enabled, sublabel }
+ */
 const outfit = {
+  mode: 'none',
   source: null,
-  drawable: null,
-  aspect: 1,
-  hasAlpha: false,
+  garments: {},
 };
 
 let detector = null;
 let frameSize = { width: 0, height: 0 };
 let toastTimer = null;
+let loadToken = 0;
 
 // ---------- UI helpers ----------
 function setStatus(text, kind = '') {
@@ -102,12 +113,27 @@ function setStatus(text, kind = '') {
   statusEl.className = `status ${kind}`.trim();
 }
 
+function cameraReady() {
+  setStatus(detector ? 'Cámara lista' : 'Cargando modelo de pose…', detector ? 'ok' : '');
+}
+
 function toast(text, kind = '') {
   toastEl.textContent = text;
   toastEl.className = `toast ${kind}`.trim();
   toastEl.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (toastEl.hidden = true), 4000);
+  toastTimer = setTimeout(() => (toastEl.hidden = true), 4500);
+}
+
+function showProgress(text, pct = null) {
+  ui.progress.hidden = false;
+  ui.progressText.textContent = text;
+  ui.progressBar.style.width = pct == null ? '100%' : `${Math.max(2, Math.min(100, pct))}%`;
+  ui.progressBar.style.opacity = pct == null ? '0.35' : '1';
+}
+
+function hideProgress() {
+  ui.progress.hidden = true;
 }
 
 function fmt(n, digits = 2) {
@@ -132,58 +158,200 @@ function syncControls() {
   $('opacity-out').value = fmt(settings.opacity);
   $('threshold-out').value = settings.threshold;
   ui.thresholdField.style.display = settings.keyBg ? '' : 'none';
+
+  renderGarmentList();
+}
+
+function thumbnailFrom(drawable) {
+  const size = 96;
+  const w = drawable.naturalWidth || drawable.width;
+  const h = drawable.naturalHeight || drawable.height;
+  const scale = Math.min(size / w, size / h, 1);
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * scale));
+  c.height = Math.max(1, Math.round(h * scale));
+  c.getContext('2d').drawImage(drawable, 0, 0, c.width, c.height);
+  return c.toDataURL();
+}
+
+function renderGarmentList() {
+  ui.garments.querySelectorAll('.garment').forEach((el) => el.remove());
+  const types = GARMENT_ORDER.filter((t) => outfit.garments[t]);
+  ui.garmentsEmpty.hidden = types.length > 0;
+
+  for (const type of [...types].reverse()) {
+    const g = outfit.garments[type];
+    const row = document.createElement('div');
+    row.className = `garment${type === settings.type ? ' active' : ''}`;
+
+    const img = document.createElement('img');
+    img.src = g.thumb || (g.thumb = thumbnailFrom(g.drawable));
+    img.alt = GARMENT_NAMES[type];
+
+    const name = document.createElement('span');
+    name.className = 'garment-name';
+    name.textContent = GARMENT_NAMES[type];
+    if (g.sublabel) {
+      const sub = document.createElement('span');
+      sub.className = 'garment-sub';
+      sub.textContent = g.sublabel;
+      name.appendChild(sub);
+    }
+    name.addEventListener('click', () => {
+      settings.type = type;
+      saveSettings();
+      syncControls();
+    });
+
+    const toggle = document.createElement('input');
+    toggle.type = 'checkbox';
+    toggle.checked = g.enabled;
+    toggle.title = 'Mostrar / ocultar';
+    toggle.addEventListener('change', () => {
+      g.enabled = toggle.checked;
+    });
+
+    row.append(img, name, toggle);
+    ui.garments.appendChild(row);
+  }
 }
 
 // ---------- Outfit handling ----------
-function rebuildDrawable() {
-  if (!outfit.source) return;
-  const useKey = settings.keyBg && !outfit.hasAlpha;
-  outfit.drawable = useKey
+function clearOutfit() {
+  outfit.mode = 'none';
+  outfit.source = null;
+  outfit.garments = {};
+  renderGarmentList();
+}
+
+/** Single-garment path: transparent PNG, or opaque image with white keying. */
+function setSingleGarment(img, sublabel) {
+  const hasAlpha = safeHasTransparency(img);
+  const drawable = !hasAlpha && settings.keyBg ? removeWhiteBackground(img, settings.threshold) : img;
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+
+  outfit.mode = 'single';
+  outfit.source = img;
+  outfit.garments = {
+    [settings.type]: {
+      drawable,
+      aspect: h / w,
+      enabled: true,
+      sublabel,
+      keyed: !hasAlpha,
+    },
+  };
+  renderGarmentList();
+}
+
+/** Re-applies white keying when its settings change (single mode only). */
+function rebuildSingleGarment() {
+  if (outfit.mode !== 'single' || !outfit.source) return;
+  const g = Object.values(outfit.garments)[0];
+  if (!g?.keyed) return;
+  g.drawable = settings.keyBg
     ? removeWhiteBackground(outfit.source, settings.threshold)
     : outfit.source;
+  g.thumb = null;
+  renderGarmentList();
+}
 
-  if (outfit.drawable instanceof HTMLCanvasElement) {
-    thumb.src = outfit.drawable.toDataURL();
-  } else {
-    thumb.src = outfit.source.src;
+function safeHasTransparency(img) {
+  try {
+    return imageHasTransparency(img);
+  } catch {
+    return false;
   }
 }
 
-function setOutfit(img, label) {
-  outfit.source = img;
-  const w = img.naturalWidth || img.width;
-  const h = img.naturalHeight || img.height;
-  outfit.aspect = h / w;
+function progressHandler(token) {
+  return (evt) => {
+    if (token !== loadToken) return;
+    if (evt.status === 'progress' && typeof evt.progress === 'number') {
+      const file = (evt.file || '').split('/').pop();
+      showProgress(`Descargando modelo de prendas… ${Math.round(evt.progress)}% (${file})`, evt.progress);
+    } else if (evt.status === 'initiate') {
+      showProgress('Descargando modelo de prendas (solo la primera vez)…', 0);
+    } else if (evt.status === 'ready') {
+      showProgress('Detectando prendas…');
+    }
+  };
+}
 
+/**
+ * Decides how to process a freshly loaded image:
+ *  - transparent → single garment in the selected slot
+ *  - opaque (JPG/JPEG/WebP…) → segmentation; if nothing detected, white-keying fallback
+ */
+async function processImage(img, label) {
+  const token = ++loadToken;
+
+  if (safeHasTransparency(img)) {
+    setSingleGarment(img, label);
+    toast(`Outfit cargado: ${label}`);
+    return;
+  }
+
+  setStatus('Procesando outfit…');
+  showProgress('Preparando modelo de prendas…');
+
+  let garments;
   try {
-    outfit.hasAlpha = imageHasTransparency(img);
-  } catch {
-    outfit.hasAlpha = false;
+    garments = await extractGarments(img, progressHandler(token));
+  } catch (err) {
+    console.error(err);
+    if (token !== loadToken) return;
+    hideProgress();
+    cameraReady();
+    setSingleGarment(img, label);
+    toast('No se pudo cargar el modelo de prendas; se aplicó solo quitar fondo blanco.', 'error');
+    return;
   }
 
-  // Product photos on white backgrounds benefit from keying; enable automatically
-  // the first time an opaque image is loaded.
-  if (!outfit.hasAlpha && !settings.keyBg) {
-    settings.keyBg = true;
+  if (token !== loadToken) return;
+  hideProgress();
+  cameraReady();
+
+  const found = Object.keys(garments);
+  if (!found.length) {
+    setSingleGarment(img, label);
+    toast('No se detectaron prendas en la foto; se aplicó quitar fondo blanco.', 'error');
+    return;
+  }
+
+  outfit.mode = 'segmented';
+  outfit.source = img;
+  outfit.garments = {};
+  for (const type of found) {
+    const g = garments[type];
+    outfit.garments[type] = {
+      drawable: g.canvas,
+      aspect: g.aspect,
+      enabled: true,
+      sublabel: g.labels.join(' + '),
+    };
+  }
+
+  // Point the sliders at a detected garment.
+  if (!outfit.garments[settings.type]) {
+    settings.type = GARMENT_ORDER.slice().reverse().find((t) => outfit.garments[t]);
     saveSettings();
-    syncControls();
   }
-
-  rebuildDrawable();
-  thumb.hidden = false;
-  thumbEmpty.hidden = true;
-  toast(`Outfit cargado: ${label}`);
+  syncControls();
+  toast(`Prendas detectadas: ${found.map((t) => GARMENT_NAMES[t].toLowerCase()).join(', ')}`);
 }
 
 async function handleFile(file) {
   try {
     setStatus('Cargando outfit…');
     const img = await loadOutfitFromFile(file);
-    setOutfit(img, file.name);
-    setStatus('Cámara lista', 'ok');
+    await processImage(img, file.name);
   } catch (err) {
-    setStatus('Cámara lista', 'ok');
+    hideProgress();
     toast(err.message, 'error');
+  } finally {
+    if (statusEl.textContent.startsWith('Cargando outfit')) cameraReady();
   }
 }
 
@@ -191,11 +359,12 @@ async function handleUrl(url) {
   try {
     setStatus('Descargando outfit…');
     const img = await loadOutfitFromUrl(url);
-    setOutfit(img, new URL(url).hostname);
-    setStatus('Cámara lista', 'ok');
+    await processImage(img, new URL(url).hostname);
   } catch (err) {
-    setStatus('Cámara lista', 'ok');
+    hideProgress();
     toast(err.message, 'error');
+  } finally {
+    if (statusEl.textContent.startsWith('Descargando outfit')) cameraReady();
   }
 }
 
@@ -218,17 +387,19 @@ function render() {
   const landmarks = detector ? detector.detect(video) : null;
 
   if (landmarks) {
-    if (outfit.drawable) {
+    for (const type of GARMENT_ORDER) {
+      const g = outfit.garments[type];
+      if (!g || !g.enabled) continue;
       const placement = computePlacement(
         landmarks,
-        settings.type,
-        settings.params[settings.type],
-        outfit.aspect,
+        type,
+        settings.params[type],
+        g.aspect,
         width,
         height,
         settings.mirror
       );
-      if (placement) drawOutfit(ctx, outfit.drawable, placement, settings.opacity);
+      if (placement) drawOutfit(ctx, g.drawable, placement, settings.opacity);
     }
     if (settings.skeleton) drawSkeleton(ctx, landmarks, width, height, settings.mirror);
   }
@@ -249,6 +420,20 @@ function takeSnapshot() {
   }, 'image/png');
 }
 
+// ---------- Reset ----------
+function resetAll() {
+  loadToken++;
+  hideProgress();
+  settings = defaultSettings();
+  localStorage.removeItem(STORAGE_KEY);
+  clearOutfit();
+  ui.urlInput.value = '';
+  ui.fileInput.value = '';
+  syncControls();
+  cameraReady();
+  toast('Todo restablecido');
+}
+
 // ---------- Events ----------
 function bindEvents() {
   ui.fileInput.addEventListener('change', () => {
@@ -257,7 +442,9 @@ function bindEvents() {
     ui.fileInput.value = '';
   });
 
-  ui.sampleBtn.addEventListener('click', () => handleUrl(new URL(SAMPLE_OUTFIT, location.href).href));
+  ui.sampleBtn.addEventListener('click', () =>
+    handleUrl(new URL(SAMPLE_OUTFIT, location.href).href)
+  );
 
   ui.urlForm.addEventListener('submit', (e) => {
     e.preventDefault();
@@ -266,7 +453,13 @@ function bindEvents() {
   });
 
   ui.type.addEventListener('change', () => {
-    settings.type = ui.type.value;
+    const newType = ui.type.value;
+    // In single mode the select decides where the garment goes: move it.
+    if (outfit.mode === 'single') {
+      const g = outfit.garments[settings.type];
+      outfit.garments = g ? { [newType]: g } : {};
+    }
+    settings.type = newType;
     saveSettings();
     syncControls();
   });
@@ -292,14 +485,14 @@ function bindEvents() {
     settings.keyBg = ui.keyBg.checked;
     saveSettings();
     syncControls();
-    rebuildDrawable();
+    rebuildSingleGarment();
   });
 
   ui.threshold.addEventListener('input', () => {
     settings.threshold = parseInt(ui.threshold.value, 10);
     saveSettings();
     syncControls();
-    rebuildDrawable();
+    rebuildSingleGarment();
   });
 
   ui.skeleton.addEventListener('change', () => {
@@ -313,15 +506,7 @@ function bindEvents() {
   });
 
   ui.snapshotBtn.addEventListener('click', takeSnapshot);
-
-  ui.resetBtn.addEventListener('click', () => {
-    const keep = { type: settings.type, skeleton: settings.skeleton, mirror: settings.mirror };
-    settings = { ...defaultSettings(), ...keep };
-    saveSettings();
-    syncControls();
-    rebuildDrawable();
-    toast('Ajustes restablecidos');
-  });
+  ui.resetBtn.addEventListener('click', resetAll);
 
   // Drag & drop onto the stage.
   ['dragenter', 'dragover'].forEach((evt) =>

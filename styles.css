@@ -212,26 +212,84 @@ input[type='range'] {
   flex: 1;
 }
 
-.preview {
-  height: 120px;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background:
-    repeating-conic-gradient(#1b1f28 0% 25%, #12151c 0% 50%) 50% / 16px 16px;
+.progress {
+  position: relative;
+  height: 22px;
+  border-radius: 6px;
+  background: #0f1218;
+  border: 1px solid var(--border);
   overflow: hidden;
 }
 
-.preview img {
-  max-height: 100%;
-  max-width: 100%;
+.progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  background: var(--accent-dark);
+  transition: width 0.2s ease;
 }
 
-.preview span {
+.progress-text {
+  position: relative;
+  display: block;
+  text-align: center;
+  font-size: 12px;
+  line-height: 22px;
+  color: var(--text);
+}
+
+.garments {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 60px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.garments-empty {
   font-size: 13px;
   color: var(--muted);
+  margin: auto;
+}
+
+.garment {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px;
+  border-radius: 6px;
+  background: #0f1218;
+}
+
+.garment.active {
+  outline: 1px solid var(--accent-dark);
+}
+
+.garment img {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 4px;
+  background:
+    repeating-conic-gradient(#1b1f28 0% 25%, #12151c 0% 50%) 50% / 12px 12px;
+}
+
+.garment .garment-name {
+  flex: 1;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.garment .garment-sub {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.garment input[type='checkbox'] {
+  accent-color: var(--accent-dark);
 }
 
 .hint {
@@ -239,6 +297,12 @@ input[type='range'] {
   color: var(--muted);
   margin: 4px 0 0;
   line-height: 1.4;
+}
+
+.hint.small {
+  font-size: 11px;
+  margin: 0;
+  line-height: 1.35;
 }
 
 .toast {

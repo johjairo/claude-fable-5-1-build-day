@@ -41,18 +41,26 @@
           <button class="btn" type="submit">Cargar</button>
         </form>
 
-        <div class="preview">
-          <img id="thumb" alt="Vista previa del outfit" hidden />
-          <span id="thumb-empty">Sin outfit cargado</span>
+        <div id="progress" class="progress" hidden>
+          <div class="progress-bar"></div>
+          <span class="progress-text"></span>
+        </div>
+
+        <div id="garments" class="garments">
+          <span id="garments-empty" class="garments-empty">Sin outfit cargado</span>
         </div>
 
         <div class="field">
-          <label for="type">Tipo de prenda</label>
+          <label for="type">Prenda a ajustar</label>
           <select id="type">
             <option value="top">Parte superior (camisa, chaqueta)</option>
             <option value="dress">Vestido / cuerpo completo</option>
             <option value="bottom">Parte inferior (pantalón, falda)</option>
           </select>
+          <span class="hint small">
+            Para PNG transparentes define dónde se coloca. Para fotos JPG las prendas se detectan
+            automáticamente.
+          </span>
         </div>
 
         <h2>Ajustes</h2>
@@ -75,7 +83,7 @@
         </div>
 
         <div class="field check">
-          <label><input id="key-bg" type="checkbox" /> Quitar fondo blanco</label>
+          <label><input id="key-bg" type="checkbox" /> Quitar fondo blanco (si no se detectan prendas)</label>
         </div>
         <div class="field" id="threshold-field">
           <label for="threshold">Umbral de blanco <output id="threshold-out"></output></label>
@@ -95,8 +103,8 @@
         </div>
 
         <p class="hint">
-          Consejo: usa imágenes PNG con fondo transparente o fotos de producto sobre fondo
-          blanco. Párate de frente, a 1–2 m de la cámara.
+          Consejo: sube una foto de una persona con el outfit puesto (JPG) y las prendas se
+          recortan solas, o un PNG con fondo transparente. Párate de frente, a 1–2 m de la cámara.
         </p>
       </aside>
     </main>

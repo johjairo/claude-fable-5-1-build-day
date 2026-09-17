@@ -6,7 +6,7 @@ const MIN_VISIBILITY = 0.5;
 export const DEFAULTS = {
   top: { width: 1.9, height: 1.0, offsetY: -0.12 },
   dress: { width: 1.9, height: 1.0, offsetY: -0.12 },
-  bottom: { width: 1.7, height: 1.0, offsetY: -0.1 },
+  bottom: { width: 1.35, height: 1.0, offsetY: -0.1 },
 };
 
 const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });

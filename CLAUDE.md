@@ -28,6 +28,7 @@ Repositorio del workshop **Build Day** (2026-09-16). Trabajan en pareja John San
 
 - HTML/CSS/JavaScript vanilla, módulos ES, sin build ni dependencias npm.
 - Detección de pose: `@mediapipe/tasks-vision` (PoseLandmarker, modo VIDEO) cargado desde CDN en `src/pose.js`.
+- Segmentación de ropa: `@huggingface/transformers` 3.7.1 (CDN) con `Xenova/segformer_b2_clothes` en `src/segment.js`. WebGPU si existe, fallback WASM. Modelo q8 ≈ 29 MB, cacheado por el navegador.
 - Render: `<canvas>` 2D con video en espejo + prenda transformada (`src/overlay.js`).
 - Servir con `python3 -m http.server 8000` (la cámara exige `localhost` o `https`).
 
@@ -38,8 +39,10 @@ Repositorio del workshop **Build Day** (2026-09-16). Trabajan en pareja John San
 - `src/pose.js`: crea el landmarker (GPU con fallback a CPU) y suaviza landmarks con EMA.
 - `src/landmarks.js`: constantes `LM` (índices) y `SKELETON` (conexiones). Sin dependencias de CDN para poder probar `overlay.js` en Node.
 - `src/outfit.js`: carga de imagen por archivo o URL (fallback a proxy `images.weserv.nl`), keying de fondo blanco.
+- `src/segment.js`: `extractGarments(img)` → `{ top?, bottom?, dress? }` con canvas recortado y transparente por prenda. Labels del modelo agrupados en `GARMENT_LABELS` (Upper-clothes → top; Pants/Skirt/Belt → bottom; Dress → dress). Umbral mínimo de área 0.5 % de la imagen.
 - `src/overlay.js`: `computePlacement(landmarks, type, params, aspect, w, h, mirrored)` → `{x, y, w, h, angle}`; `drawOutfit`, `drawSkeleton`.
 - Tipos de prenda: `top` y `dress` se anclan al punto medio de hombros; `bottom` al punto medio de caderas. Ancho sale de la distancia entre hombros/caderas; alto respeta la relación de aspecto de la imagen.
+- Flujo en `app.js` (`processImage`): imagen con transparencia → prenda única en la ranura seleccionada; imagen opaca → segmentación; sin prendas detectadas o error del modelo → fallback a quitar fondo blanco. `outfit.mode` ∈ `none | single | segmented`. Orden de dibujo `GARMENT_ORDER`: dress, bottom, top.
 
 ## Reglas al modificar
 
