@@ -55,6 +55,7 @@ src/landmarks.js  índices de landmarks y conexiones del esqueleto
 src/outfit.js     carga desde archivo/URL, quitar fondo blanco
 src/overlay.js    landmarks → posición/tamaño/rotación de la prenda
 assets/           prenda de ejemplo
+prompts/          prompts para explorar variantes en sesiones nuevas de Claude Code
 ```
 
 ## Limitaciones conocidas
