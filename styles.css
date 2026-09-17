@@ -372,6 +372,13 @@ input[type='password'] {
   font-size: 14px;
 }
 
+/* display:flex would override the UA [hidden] rule; keep hidden working. */
+.result[hidden],
+.dropzone[hidden],
+.progress[hidden] {
+  display: none !important;
+}
+
 .result {
   position: fixed;
   inset: 0;

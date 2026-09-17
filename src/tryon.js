@@ -28,6 +28,17 @@ const CATEGORY_TEXT = {
 
 const clients = new Map();
 
+/** Rejects with AbortError as soon as `signal` aborts, even if `promise` never settles. */
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new DOMException('Cancelado', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('Cancelado', 'AbortError'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
 async function getClient(space, hfToken) {
   const key = `${space}|${hfToken || ''}`;
   if (!clients.has(key)) {
@@ -86,7 +97,7 @@ export async function generateTryOn({
   if (!cfg) throw new Error(`Proveedor desconocido: ${provider}`);
 
   onStatus({ stage: 'connecting' });
-  const app = await getClient(cfg.space, hfToken);
+  const app = await abortable(getClient(cfg.space, hfToken), signal);
 
   const garmentDes = [description, CATEGORY_TEXT[category]].filter(Boolean).join(', ');
   const job = app.submit('/tryon', [
@@ -103,8 +114,10 @@ export async function generateTryOn({
   signal?.addEventListener('abort', abort, { once: true });
 
   try {
-    for await (const msg of job) {
-      if (signal?.aborted) throw new DOMException('Cancelado', 'AbortError');
+    const it = job[Symbol.asyncIterator]();
+    while (true) {
+      const { value: msg, done } = await abortable(it.next(), signal);
+      if (done) break;
       if (msg.type === 'status') {
         if (msg.stage === 'error') {
           throw new Error(msg.message || 'El Space devolvió un error (¿cuota de GPU agotada?).');

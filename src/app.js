@@ -561,10 +561,13 @@ function openResult(beforeUrl) {
 
 function closeResult() {
   ui.result.hidden = true;
+  if (generating?.running && !generating.controller.signal.aborted) generating.controller.abort();
   if (generating?.before) URL.revokeObjectURL(generating.before);
   if (generating?.after?.startsWith('blob:')) URL.revokeObjectURL(generating.after);
-  if (!generating?.controller.signal.aborted && generating?.running) generating.controller.abort();
   generating = null;
+  ui.resultBefore.removeAttribute('src');
+  ui.resultAfter.removeAttribute('src');
+  setResultStatus('');
   syncControls();
 }
 
@@ -841,7 +844,8 @@ function bindEvents() {
   ui.generateBtn.addEventListener('click', generate);
   ui.resultClose.addEventListener('click', closeResult);
   ui.resultCancel.addEventListener('click', () => {
-    generating?.controller.abort();
+    if (!generating?.running) return closeResult();
+    generating.controller.abort();
     setResultStatus('Cancelando…');
   });
   ui.resultDownload.addEventListener('click', downloadResult);
